@@ -1,526 +1,389 @@
-# bot.py
+# inline.py
 import os
-import json
-import time
-from telethon import TelegramClient, events, Button, errors
-from config import API_ID, API_HASH, BOT_TOKEN, SESSIONS_DIR, get_tehran_time, BOT_USERNAME
-from login_manager import (
-    start_login, handle_login_button, handle_phone_contact,
-    handle_2fa_message, login_states
+from datetime import datetime
+from telethon import TelegramClient, events, Button
+from config import (
+    API_ID, API_HASH, INLINE_BOT_TOKEN, INLINE_USERNAME,
+    CLOCK_FORMATS, FONT_NAMES, BOT_USERNAME, get_tehran_time
+)
+from commands_db import (
+    get_session_data, get_clock_settings, update_clock_settings,
+    init_session, session_exists, get_ads_settings, update_ads_settings,
+    delete_ads_banner, reset_ads_stats
 )
 
-SELF_DATA_FILE = os.path.join(SESSIONS_DIR, 'self_data.json')
-os.makedirs(SESSIONS_DIR, exist_ok=True)
+async def run_inline():
+    bot = TelegramClient('sessions/inline_bot', API_ID, API_HASH)
+    
+    try:
+        await bot.start(bot_token=INLINE_BOT_TOKEN)
+    except Exception as e:
+        print(f"❌ خطا Inline Bot: {e}")
+        return
+    
+    print(f"🤖 Inline Bot فعال شد: @{INLINE_USERNAME}")
 
-user_states = {}
-
-def load_self_data():
-    if os.path.exists(SELF_DATA_FILE):
+    def find_session_name(sender_id):
+        session_name = f"user_{sender_id}"
+        if session_exists(session_name):
+            return session_name
         try:
-            with open(SELF_DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            from config import SESSIONS_DIR
+            if os.path.exists(SESSIONS_DIR):
+                for f in os.listdir(SESSIONS_DIR):
+                    if f.endswith('.txt') and f.startswith('user_'):
+                        sname = f[:-4]
+                        if session_exists(sname):
+                            return sname
         except:
             pass
-    return {'ads': {}, 'users': {}}
+        init_session(session_name)
+        return session_name
 
-def save_self_data(data):
-    with open(SELF_DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    def get_font_preview(font_num, time_str="12:34"):
+        if font_num in CLOCK_FORMATS:
+            try:
+                formatted = CLOCK_FORMATS[font_num]("Ali", time_str)
+                return formatted.strip()
+            except:
+                return f"{font_num}. {FONT_NAMES.get(font_num, 'Unknown')}"
+        return f"{font_num}. {FONT_NAMES.get(font_num, 'Unknown')}"
 
-async def run_bot():
-    bot = TelegramClient('sessions/bot_main', API_ID, API_HASH)
-    try:
-        await bot.start(bot_token=BOT_TOKEN)
-    except Exception as e:
-        print(f"❌ خطا ربات: {e}")
-        return
-    print("🤖 ربات اصلی فعال شد")
-    
-    async def send_main_menu(event, edit=False):
+    def build_main_menu():
         text = (
-            "🎛 **منوی اصلی ربات**\n\n"
-            "یکی از گزینه‌ها را انتخاب کنید:"
+            "🎛 **پنل کنترل سلف**\n\n"
+            "یکی از گزینه‌ها را انتخاب کنید:\n\n"
+            f"🕐 زمان تهران: `{get_tehran_time('%H:%M:%S')}`"
         )
         buttons = [
-            [Button.inline("🔧 نصب ربات سلف", data=b"install")],
-            [Button.inline("📖 راهنمای دستورات", data=b"commands"),
-             Button.inline("🎯 قابلیت تبچی", data=b"ad_menu")],
-            [Button.inline("ℹ️ درباره ربات", data=b"about"),
-             Button.inline("❌ بستن", data=b"close")],
+            [Button.inline("⏰ ساعت", data=b"clk_menu")],
+            [Button.inline("📢 تبچی", data=b"adv_menu"),
+             Button.inline("⚔️ دشمن", data=b"enm_menu")],
+            [Button.inline("🤫 سکوت", data=b"sil_menu"),
+             Button.inline("📨 اسپم", data=b"spm_menu")],
+            [Button.inline("🗑 حذف پیام", data=b"del_menu"),
+             Button.inline("❓ راهنما", data=b"hlp_menu")],
         ]
-        if edit:
-            await event.edit(text, buttons=buttons)
-        else:
-            await event.reply(text, buttons=buttons)
-    
-    # ========================================
-    # 🆕 /start با Deep Link Handler
-    # ========================================
-    @bot.on(events.NewMessage(pattern='/start'))
-    async def start(event):
-        uid = event.sender_id
+        return text, buttons
+
+    def build_clock_menu(session_name):
+        settings = get_clock_settings(session_name)
+        enabled = settings.get("enabled", False)
+        bio_clock = settings.get("bio_clock", False)
+        lastname_clock = settings.get("lastname_clock", False)
+        font = settings.get("font", 1)
         
-        # 🆕 بررسی Deep Link parameters
-        if event.raw_text and len(event.raw_text.split()) > 1:
-            deep_param = event.raw_text.split()[1]
-            
-            # 🎯 Deep Link برای ارسال بنر
-            if deep_param == "ads_banner":
-                session_name = f"user_{uid}"
-                
-                # بررسی اینکه کاربر سشن فعال دارد
-                from commands_db import session_exists, get_ads_settings, update_ads_settings
-                
-                if not session_exists(session_name):
-                    await event.reply(
-                        "❌ **ابتدا باید سلف‌بات خود را نصب کنید!**\n\n"
-                        "لطفاً از دکمه زیر استفاده کنید:",
-                        buttons=[[Button.inline("🔧 نصب ربات سلف", data=b"install")]]
-                    )
-                    return
-                
-                # ست کردن state برای شروع فرایند
-                user_states[uid] = {
-                    'step': 'ADV_WAITING_BANNER',
-                    'data': {}
-                }
-                
-                # علامت‌گذاری در دیتابیس
-                update_ads_settings(session_name, _waiting_banner=True)
-                
-                await event.reply(
-                    "📢 **ارسال بنر جدید**\n\n"
-                    "لطفاً بنر خود را ارسال کنید.\n"
-                    "می‌تواند **متن، عکس، فیلم یا فایل** باشد.\n\n"
-                    "💡 برای لغو: `/cancel`\n\n"
-                    "👇 **همین الان بنر را بفرستید:**"
-                )
-                return
-            
-            # سایر Deep Link ها اینجا قابل اضافه شدن هستند
-            # elif deep_param == "other_feature": ...
+        now = datetime.now().strftime("%H:%M")
+        preview = get_font_preview(font, now)
         
-        # حالت عادی /start
-        from commands_db import get_ads_settings
-        session_name = f"user_{uid}"
+        main_status = "🟢 **روشن**" if enabled else "🔴 **خاموش**"
+        bio_status = "✅ فعال" if bio_clock else "❌ غیرفعال"
+        ln_status = "✅ فعال" if lastname_clock else "❌ غیرفعال"
+        
+        toggle_text = "🔴 خاموش کردن ساعت" if enabled else "🟢 روشن کردن ساعت"
+        
+        text = (
+            f"⏰ **تنظیمات ساعت پروفایل**\n\n"
+            f"**وضعیت:** {main_status}\n\n"
+            f"📝 **پیش‌نمایش:**\n`{preview}`\n\n"
+            f"🕐 تهران: `{get_tehran_time('%H:%M:%S')}`"
+        )
+        
+        buttons = [
+            [Button.inline(toggle_text, data=b"clk_toggle")],
+            [Button.inline(f"📝 ساعت در بیو: {bio_status}", data=b"clk_bio")],
+            [Button.inline(f"👤 ساعت در نام خانوادگی: {ln_status}", data=b"clk_ln")],
+            [Button.inline(f"🎨 فونت: {FONT_NAMES.get(font, 'Normal')}", data=b"clk_fnt_menu")],
+            [Button.inline("⬅️ بازگشت", data=b"back_main")],
+        ]
+        return text, buttons
+
+    def build_font_menu(session_name):
+        settings = get_clock_settings(session_name)
+        current_font = settings.get("font", 1)
+        now = datetime.now().strftime("%H:%M")
+        
+        text = (
+            f"🎨 **انتخاب فونت ساعت**\n\n"
+            f"📝 زمان نمونه: `{now}`\n"
+        )
+        
+        buttons = []
+        for i in range(1, 14):
+            tick = "✅" if i == current_font else "  "
+            preview = get_font_preview(i, now)
+            btn_text = f"{tick} {preview}"
+            if len(btn_text) > 60:
+                btn_text = btn_text[:57] + "..."
+            buttons.append([Button.inline(btn_text, data=f"clk_f{i}".encode())])
+        
+        buttons.append([Button.inline("⬅️ بازگشت", data=b"clk_menu")])
+        return text, buttons
+
+    def build_ads_menu(session_name):
         ads = get_ads_settings(session_name)
+        active = ads.get("active", False)
+        banner_type = ads.get("banner_type")
+        interval = ads.get("interval", 30)
+        forward_mode = ads.get("forward_mode", False)
+        success = ads.get("success_count", 0)
+        failed = ads.get("failed_count", 0)
+        last_sent = ads.get("last_sent")
         
-        if ads.get('_waiting_banner'):
-            user_states[uid] = {
-                'step': 'ADV_WAITING_BANNER',
-                'data': {}
-            }
-            await event.reply(
-                "📢 **ارسال بنر جدید**\n\n"
-                "لطفاً بنر خود را ارسال کنید.\n"
-                "می‌تواند **متن، عکس، فیلم یا فایل** باشد.\n\n"
-                "💡 برای لغو: `/cancel`"
-            )
-            return
+        status = "🟢 فعال" if active else "🔴 غیرفعال"
+        banner_status = "✅ دارد" if banner_type else "❌ ندارد"
+        forward_status = "✅ فوروارد" if forward_mode else "📤 عادی"
         
-        if uid in user_states:
-            del user_states[uid]
-        await send_main_menu(event)
-    
-    @bot.on(events.NewMessage(pattern='/install'))
-    async def install_cmd(event):
-        class EventWrapper:
-            def __init__(self, original):
-                self.sender_id = original.sender_id
-                self.chat_id = original.chat_id
-                self.original = original
-            
-            async def edit(self, *args, **kwargs):
-                return await self.original.respond(*args, **kwargs)
-                
-            async def respond(self, *args, **kwargs):
-                return await self.original.respond(*args, **kwargs)
+        last_sent_text = "—"
+        if last_sent:
+            try:
+                last_dt = datetime.fromisoformat(last_sent)
+                last_sent_text = last_dt.strftime("%H:%M:%S")
+            except:
+                last_sent_text = last_sent
         
-        wrapped = EventWrapper(event)
-        await start_login(wrapped)
-    
-    @bot.on(events.NewMessage(func=lambda e: e.is_private))
-    async def message_handler(event):
-        uid = event.sender_id
+        toggle_text = "🔴 خاموش کردن تبلیغ" if active else "🟢 روشن کردن تبلیغ"
         
-        if event.contact:
-            if uid in login_states and login_states[uid]["step"] == "ASK_PHONE":
-                await handle_phone_contact(event)
-                return
+        # 🆕 ساخت لینک Deep Link برای ارسال بنر
+        deep_link = f"https://t.me/{BOT_USERNAME}?start=ads_banner"
         
-        if uid in login_states:
-            state = login_states[uid]
-            
-            if state["step"] == "WAIT_2FA":
-                if event.text:
-                    await handle_2fa_message(event)
-                    return
+        text = (
+            f"📢 **مدیریت تبچی (تبلیغات)**\n\n"
+            f"**وضعیت:** {status}\n"
+            f"**بنر:** {banner_status}\n"
+            f"**حالت ارسال:** {forward_status}\n"
+            f"**فاصله:** هر `{interval}` دقیقه\n\n"
+            f"📊 **آمار:**\n"
+            f"   ✅ موفق: `{success}`\n"
+            f"   ❌ ناموفق: `{failed}`\n"
+            f"   🕐 آخرین ارسال: `{last_sent_text}`\n\n"
+            f"🕐 تهران: `{get_tehran_time('%H:%M:%S')}`"
+        )
         
-        if uid not in user_states:
-            return
-        
-        state = user_states[uid]
-        step = state.get('step')
-        session_name = f"user_{uid}"
-        
-        if event.text and event.text.strip() in ['/cancel', 'لغو', '❌ لغو']:
-            del user_states[uid]
-            await event.reply("❌ عملیات لغو شد")
-            await send_main_menu(event)
-            return
-        
+        buttons = [
+            [Button.inline(toggle_text, data=b"adv_toggle")],
+            # 🆕 دکمه URL به جای inline button - با کلیک مستقیم به ربات می‌رود
+            [Button.url("➕ ارسال بنر جدید", deep_link)],
+            [Button.inline("🗑 حذف بنر فعلی", data=b"adv_delete")],
+            [Button.inline("🔄 ریست آمار", data=b"adv_reset_stats")],
+            [Button.inline("⬅️ بازگشت", data=b"back_main")],
+        ]
+        return text, buttons
+
+    @bot.on(events.InlineQuery)
+    async def inline_handler(event):
         try:
-            if step == 'ADV_WAITING_BANNER':
-                from commands_db import update_ads_settings
-                
-                banner_data = {
-                    'type': None, 'text': '', 'media_id': None, 'caption': ''
-                }
-                
-                if event.photo:
-                    banner_data['type'] = 'photo'
-                    banner_data['media_id'] = event.photo.id
-                    banner_data['caption'] = event.text or ''
-                elif event.video:
-                    banner_data['type'] = 'video'
-                    banner_data['media_id'] = event.video.id
-                    banner_data['caption'] = event.text or ''
-                elif event.document:
-                    banner_data['type'] = 'document'
-                    banner_data['media_id'] = event.document.id
-                    banner_data['caption'] = event.text or ''
-                elif event.text:
-                    banner_data['type'] = 'text'
-                    banner_data['text'] = event.text
-                else:
-                    await event.reply("❌ نوع پیام پشتیبانی نمی‌شود")
-                    return
-                
-                state['data']['banner'] = banner_data
-                state['step'] = 'ADV_WAITING_INTERVAL'
-                
-                preview = ""
-                if banner_data['type'] == 'text':
-                    preview = f"📝 متن:\n{banner_data['text'][:200]}"
-                else:
-                    preview = f"📎 نوع: {banner_data['type']}\n📝 کپشن: {banner_data['caption'][:200] or '—'}"
-                
-                await event.reply(
-                    f"✅ **بنر دریافت شد!**\n\n"
-                    f"{preview}\n\n"
-                    f"⏱ **حالا فاصله زمانی را به دقیقه وارد کنید:**\n"
-                    f"(مثلاً `30` برای هر 30 دقیقه)\n\n"
-                    f"💡 برای لغو: `/cancel`"
-                )
-                return
+            builder = event.builder
+            sender_id = event.sender_id
+            session_name = find_session_name(sender_id)
             
-            elif step == 'ADV_WAITING_INTERVAL':
-                text = (event.text or '').strip()
-                if not text.isdigit():
-                    await event.reply("❌ فقط عدد وارد کنید (به دقیقه)")
-                    return
-                
-                interval = int(text)
-                if interval < 1 or interval > 1440:
-                    await event.reply("❌ بین 1 تا 1440 دقیقه")
-                    return
-                
-                state['data']['interval'] = interval
-                state['step'] = 'ADV_WAITING_FORWARD'
-                
-                await event.reply(
-                    f"✅ فاصله: **{interval} دقیقه**\n\n"
-                    f"📤 **حالت ارسال:**\n"
-                    f"آیا بنر به صورت **فوروارد** ارسال شود؟\n\n"
-                    f"💡 فوروارد = بدون کپی (بهتر برای جلوگیری از اسپم)\n"
-                    f"💡 عادی = کپی کامل پیام\n\n"
-                    f"👇 یکی از دکمه‌ها را بزنید:",
-                    buttons=[
-                        [Button.inline("📤 فوروارد", data=b"adv_fwd_yes"),
-                         Button.inline("✉️ عادی", data=b"adv_fwd_no")],
-                        [Button.inline("❌ لغو", data=b"adv_cancel")]
-                    ]
-                )
-                return
+            text, buttons = build_main_menu()
             
-            elif step == 'ADV_WAITING_FORWARD':
-                text = (event.text or '').strip().lower()
-                forward_mode = False
-                if text in ['بله', 'yes', 'فوروارد', '1']:
-                    forward_mode = True
-                elif text in ['نه', 'no', 'خیر', 'عادی', '0']:
-                    forward_mode = False
-                else:
-                    await event.reply("❌ لطفاً از دکمه‌ها استفاده کنید")
-                    return
-                
-                await finalize_ads(event, uid, session_name, state, forward_mode)
-                return
-        
+            result = builder.article(
+                title="🎛 پنل کنترل سلف",
+                description=f"پنل شما | {session_name}",
+                text=text,
+                buttons=buttons
+            )
+            
+            await event.answer([result], cache_time=0, private=True)
         except Exception as e:
-            print(f"⚠️ خطا در ads_flow_handler: {e}")
-            await event.reply(f"❌ خطا: {e}")
-            return
-    
-    async def finalize_ads(event, uid, session_name, state, forward_mode):
-        from commands_db import update_ads_settings
-        
-        banner = state['data']['banner']
-        interval = state['data']['interval']
-        
-        update_ads_settings(
-            session_name,
-            active=True,
-            interval=interval,
-            forward_mode=forward_mode,
-            banner_type=banner['type'],
-            banner_text=banner['text'],
-            banner_media_id=banner['media_id'],
-            banner_caption=banner['caption'],
-            success_count=0,
-            failed_count=0,
-            sent_count=0,
-            last_sent=None,
-            _waiting_banner=False
-        )
-        
-        if uid in user_states:
-            del user_states[uid]
-        
-        forward_text = "📤 فوروارد" if forward_mode else "✉️ عادی"
-        
-        # 🆕 لینک بازگشت به پنل اینلاین
-        inline_link = f"https://t.me/{INLINE_USERNAME}"
-        
-        await event.reply(
-            f"🎉 **تبلیغ فعال شد!**\n\n"
-            f"⏱ فاصله: `{interval}` دقیقه\n"
-            f"📤 حالت: {forward_text}\n"
-            f"📎 نوع بنر: `{banner['type']}`\n\n"
-            f"💡 **گزارش‌ها در پیام‌های ذخیره (Saved Messages)** ارسال می‌شوند.\n\n"
-            f"📊 برای مشاهده آمار، از دستور `.پنل` در چت استفاده کنید.",
-            buttons=[[Button.url("🎛 بازگشت به پنل", inline_link)]]
-        )
-    
-    @bot.on(events.CallbackQuery(data=b"adv_fwd_yes"))
-    async def adv_fwd_yes(event):
-        uid = event.sender_id
-        if uid not in user_states:
-            await event.answer("❌ Session منقضی", alert=True)
-            return
-        state = user_states[uid]
-        if state.get('step') != 'ADV_WAITING_FORWARD':
-            return
-        session_name = f"user_{uid}"
-        await finalize_ads(event, uid, session_name, state, forward_mode=True)
-
-    @bot.on(events.CallbackQuery(data=b"adv_fwd_no"))
-    async def adv_fwd_no(event):
-        uid = event.sender_id
-        if uid not in user_states:
-            await event.answer("❌ Session منقضی", alert=True)
-            return
-        state = user_states[uid]
-        if state.get('step') != 'ADV_WAITING_FORWARD':
-            return
-        session_name = f"user_{uid}"
-        await finalize_ads(event, uid, session_name, state, forward_mode=False)
-
-    @bot.on(events.CallbackQuery(data=b"adv_cancel"))
-    async def adv_cancel(event):
-        uid = event.sender_id
-        if uid in user_states:
-            del user_states[uid]
-        await event.edit("❌ عملیات لغو شد")
+            print(f"⚠️ خطای inline query: {e}")
     
     @bot.on(events.CallbackQuery())
-    async def callback(event):
-        data = event.data.decode('utf-8')
-        uid = event.sender_id
-        
+    async def callback_handler(event):
         try:
-            if data.startswith("login_"):
-                await handle_login_button(event)
+            d = event.data.decode('utf-8')
+            sender_id = event.sender_id
+            session_name = find_session_name(sender_id)
+            
+            if d == "back_main":
+                text, buttons = build_main_menu()
+                await event.edit(text, buttons=buttons)
                 return
             
-            if data == "install":
-                class EventWrapper:
-                    def __init__(self, original):
-                        self.sender_id = original.sender_id
-                        self.chat_id = original.chat_id
-                        self.original = original
-                    
-                    async def edit(self, *args, **kwargs):
-                        try:
-                            return await self.original.edit(*args, **kwargs)
-                        except errors.MessageNotModifiedError:
-                            pass
-                        except:
-                            return await self.original.respond(*args, **kwargs)
-                            
-                    async def respond(self, *args, **kwargs):
-                        return await self.original.respond(*args, **kwargs)
-                
-                wrapped = EventWrapper(event)
-                await start_login(wrapped)
+            if d == "clk_menu":
+                text, buttons = build_clock_menu(session_name)
+                await event.edit(text, buttons=buttons)
                 return
             
-            elif data == "ad_menu":
-                sdata = load_self_data()
-                ad = sdata.get('ads', {}).get(str(uid))
-                
-                if ad and ad.get('active'):
-                    count_text = "بی‌نهایت" if ad.get('total_count', 0) == 0 else f"{ad.get('total_count')} بار"
-                    await event.edit(
-                        f"🎯 **تبلیغات فعال**\n\n"
-                        f"⏱ فاصله: `{ad.get('interval')}` دقیقه\n"
-                        f"📊 کل: {count_text}\n"
-                        f"✅ ارسال شده: `{ad.get('sent_count', 0)}` بار",
-                        buttons=[
-                            [Button.inline("⏸ توقف", data=b"ad_pause"),
-                             Button.inline("▶️ ادامه", data=b"ad_resume")],
-                            [Button.inline("🗑 حذف", data=b"ad_delete")],
-                            [Button.inline("🆕 جدید", data=b"ad_new")],
-                            [Button.inline("⬅️ بازگشت", data=b"back")],
-                        ]
-                    )
-                else:
-                    deep_link = f"https://t.me/{BOT_USERNAME}?start=ads_banner"
-                    await event.edit(
-                        "🎯 **قابلیت‌های تبچی**\n\n"
-                        "📢 ارسال تبلیغ به همه گروه‌ها\n\n"
-                        "💡 **برای ارسال بنر جدید:**\n"
-                        "روی دکمه زیر کلیک کنید",
-                        buttons=[
-                            [Button.url("➕ ارسال بنر جدید", deep_link)],
-                            [Button.inline("⬅️ بازگشت", data=b"back")],
-                        ]
-                    )
-            
-            elif data == "ad_new":
-                # هدایت با Deep Link
-                deep_link = f"https://t.me/{BOT_USERNAME}?start=ads_banner"
-                await event.edit(
-                    "🎯 **ارسال بنر جدید**\n\n"
-                    "برای شروع، روی دکمه زیر کلیک کنید:",
-                    buttons=[[Button.url("➕ شروع ارسال بنر", deep_link)]]
+            if d == "clk_toggle":
+                settings = get_clock_settings(session_name)
+                new_state = not settings.get("enabled", False)
+                update_clock_settings(session_name, enabled=new_state)
+                await event.answer(
+                    "🟢 ساعت روشن شد!" if new_state else "🔴 ساعت خاموش شد",
+                    alert=True
                 )
+                text, buttons = build_clock_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "ad_confirm":
-                state = user_states.get(uid)
-                if not state:
-                    await event.edit("❌ منقضی")
+            if d == "clk_bio":
+                settings = get_clock_settings(session_name)
+                new_state = not settings.get("bio_clock", False)
+                update_clock_settings(session_name, bio_clock=new_state)
+                if new_state and not settings.get("enabled"):
+                    update_clock_settings(session_name, enabled=True)
+                await event.answer(
+                    "✅ بیو فعال شد" if new_state else "❌ بیو غیرفعال شد",
+                    alert=True
+                )
+                text, buttons = build_clock_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
+            
+            if d == "clk_ln":
+                settings = get_clock_settings(session_name)
+                new_state = not settings.get("lastname_clock", False)
+                update_clock_settings(session_name, lastname_clock=new_state)
+                if new_state and not settings.get("enabled"):
+                    update_clock_settings(session_name, enabled=True)
+                await event.answer(
+                    "✅ نام خانوادگی فعال شد" if new_state else "❌ نام خانوادگی غیرفعال شد",
+                    alert=True
+                )
+                text, buttons = build_clock_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
+            
+            if d == "clk_fnt_menu":
+                text, buttons = build_font_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
+            
+            if d.startswith("clk_f") and d[5:].isdigit():
+                font_num = int(d[5:])
+                if 1 <= font_num <= 13:
+                    update_clock_settings(session_name, font=font_num)
+                    await event.answer(
+                        f"✅ فونت: {FONT_NAMES[font_num]}", alert=True
+                    )
+                    text, buttons = build_font_menu(session_name)
+                    await event.edit(text, buttons=buttons)
+                return
+            
+            if d == "adv_menu":
+                text, buttons = build_ads_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
+            
+            if d == "adv_toggle":
+                ads = get_ads_settings(session_name)
+                
+                if not ads.get("banner_type"):
+                    await event.answer(
+                        "❌ ابتدا باید بنر ارسال کنید!\n\nروی دکمه «➕ ارسال بنر جدید» کلیک کنید.",
+                        alert=True
+                    )
                     return
-                ad_data = state['data']
-                sdata = load_self_data()
-                sdata.setdefault('ads', {})[str(uid)] = {
-                    'user_id': uid,
-                    'interval': ad_data['interval'],
-                    'total_count': ad_data['total_count'],
-                    'text': ad_data.get('text', ''),
-                    'media_type': ad_data.get('media_type'),
-                    'media_id': ad_data.get('media_id'),
-                    'active': True,
-                    'sent_count': 0,
-                    'created_at': time.time(),
-                    'last_sent': None,
-                }
-                save_self_data(sdata)
-                del user_states[uid]
                 
-                count_text = "بی‌نهایت" if ad_data['total_count'] == 0 else f"{ad_data['total_count']} بار"
-                await event.edit(
-                    f"✅ **فعال شد!**\n\n⏱ {ad_data['interval']} دقیقه\n📊 {count_text}",
-                    buttons=[
-                        [Button.inline("⏸ توقف", data=b"ad_pause"),
-                         Button.inline("🗑 حذف", data=b"ad_delete")],
-                        [Button.inline("⬅️ منو", data=b"back")],
-                    ]
+                new_state = not ads.get("active", False)
+                update_ads_settings(session_name, active=new_state)
+                
+                await event.answer(
+                    "🟢 تبلیغ روشن شد!" if new_state else "🔴 تبلیغ خاموش شد",
+                    alert=True
                 )
+                text, buttons = build_ads_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "ad_cancel":
-                if uid in user_states:
-                    del user_states[uid]
-                await event.edit("❌ لغو شد",
-                    buttons=[[Button.inline("⬅️ بازگشت", data=b"ad_menu")]])
+            # 🆕 حذف شد - adv_new دیگر نیاز نیست چون از URL استفاده می‌کنیم
             
-            elif data == "ad_pause":
-                sdata = load_self_data()
-                if str(uid) in sdata.get('ads', {}):
-                    sdata['ads'][str(uid)]['active'] = False
-                    save_self_data(sdata)
-                await event.answer("⏸ متوقف شد", alert=True)
+            if d == "adv_delete":
+                delete_ads_banner(session_name)
+                await event.answer("🗑 بنر حذف شد", alert=True)
+                text, buttons = build_ads_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "ad_resume":
-                sdata = load_self_data()
-                if str(uid) in sdata.get('ads', {}):
-                    sdata['ads'][str(uid)]['active'] = True
-                    save_self_data(sdata)
-                await event.answer("▶️ ادامه یافت", alert=True)
+            if d == "adv_reset_stats":
+                reset_ads_stats(session_name)
+                await event.answer("🔄 آمار ریست شد", alert=True)
+                text, buttons = build_ads_menu(session_name)
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "ad_delete":
-                sdata = load_self_data()
-                if str(uid) in sdata.get('ads', {}):
-                    del sdata['ads'][str(uid)]
-                    save_self_data(sdata)
-                await event.edit("🗑 حذف شد",
-                    buttons=[[Button.inline("⬅️ بازگشت", data=b"ad_menu")]])
-            
-            elif data == "commands":
-                await event.edit(
-                    "📖 **راهنما**",
-                    buttons=[
-                        [Button.inline("⏰ ساعت", data=b"cmd_clock"),
-                         Button.inline("📨 اسپم", data=b"cmd_spam")],
-                        [Button.inline("🗑 حذف", data=b"cmd_delete"),
-                         Button.inline("⚔️ دشمن", data=b"cmd_enemy")],
-                        [Button.inline("🤫 سکوت", data=b"cmd_silence"),
-                         Button.inline("🎛 سایر", data=b"cmd_other")],
-                        [Button.inline("⬅️ بازگشت", data=b"back")],
-                    ]
+            if d == "enm_menu":
+                from commands_db import get_enemies
+                enemies = get_enemies(session_name)
+                text = (
+                    f"⚔️ **لیست دشمنان**\n\n"
+                    f"👥 تعداد: `{len(enemies)}` نفر\n\n"
+                    f"💡 **دستورات:**\n"
+                    f"• `.دشمن @username`\n"
+                    f"• `.حذف دشمن @username`\n"
+                    f"• `.لیست دشمن`"
                 )
+                buttons = [[Button.inline("⬅️ بازگشت", data=b"back_main")]]
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data in ["cmd_clock", "cmd_spam", "cmd_delete", "cmd_enemy", "cmd_silence", "cmd_other"]:
-                texts = {
-                    "cmd_clock": "⏰ `.ساعت روشن 1` تا `.ساعت روشن 13`\n`.ساعت خاموش`\n\n💡 **پیشنهاد:** دستور `.پنل` را بزنید",
-                    "cmd_spam": "📨 `.اسپم 20 سلام`",
-                    "cmd_delete": "🗑 `.حذف پیام 20`",
-                    "cmd_enemy": "⚔️ `.دشمن` `.حذف دشمن` `.لیست دشمن`",
-                    "cmd_silence": "🤫 `.سکوت` `.حذف سکوت` `.لیست سکوت`",
-                    "cmd_other": "🎛 `.پنل` `.info` `.پینگ`"
-                }
-                await event.edit(
-                    texts.get(data, ""),
-                    buttons=[[Button.inline("⬅️ بازگشت", data=b"commands")]]
+            if d == "sil_menu":
+                from commands_db import get_silences
+                silences = get_silences(session_name)
+                text = (
+                    f"🤫 **لیست سکوت**\n\n"
+                    f"👥 تعداد: `{len(silences)}` نفر\n\n"
+                    f"💡 **دستورات:**\n"
+                    f"• `.سکوت @username`\n"
+                    f"• `.حذف سکوت @username`\n"
+                    f"• `.لیست سکوت`"
                 )
+                buttons = [[Button.inline("⬅️ بازگشت", data=b"back_main")]]
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "about":
-                await event.edit(
-                    "ℹ️ **درباره ربات**\n\n"
-                    "📦 نسخه 8.0 - معماری StringSession\n\n"
-                    "✨ نصب با یک کلیک\n"
-                    "✨ Share Contact تلگرام\n"
-                    "✨ 13 فونت Unicode\n"
-                    "✨ تبلیغات خودکار با Deep Link\n"
-                    "✨ دستور `.پنل` برای کنترل کامل",
-                    buttons=[[Button.inline("⬅️ بازگشت", data=b"back")]]
+            if d == "spm_menu":
+                text = (
+                    "📨 **اسپم پیام**\n\n"
+                    "**دستور:**\n`.اسپم (تعداد) (متن)`\n\n"
+                    "**مثال:** `.اسپم 20 سلام`\n\n"
+                    "⚠️ حداکثر: 1000 پیام"
                 )
+                buttons = [[Button.inline("⬅️ بازگشت", data=b"back_main")]]
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "back":
-                if uid in user_states:
-                    del user_states[uid]
-                await send_main_menu(event, edit=True)
+            if d == "del_menu":
+                text = (
+                    "🗑 **حذف پیام**\n\n"
+                    "**دستور:**\n`.حذف پیام (تعداد)`\n\n"
+                    "**مثال:** `.حذف پیام 20`\n\n"
+                    "⚠️ حداکثر: 1000 پیام"
+                )
+                buttons = [[Button.inline("⬅️ بازگشت", data=b"back_main")]]
+                await event.edit(text, buttons=buttons)
+                return
             
-            elif data == "close":
-                await event.delete()
+            if d == "hlp_menu":
+                text = (
+                    "❓ **راهنمای کامل**\n\n"
+                    "⏰ **ساعت:** از منوی مربوطه\n\n"
+                    "📢 **تبچی:** منوی جداگانه دارد\n\n"
+                    "⚔️ **دشمن:**\n"
+                    "• `.دشمن @username`\n"
+                    "• `.حذف دشمن @username`\n\n"
+                    "🤫 **سکوت:**\n"
+                    "• `.سکوت @username`\n"
+                    "• `.حذف سکوت @username`\n\n"
+                    "📨 **اسپم:** `.اسپم 20 سلام`\n\n"
+                    "🗑 **حذف:** `.حذف پیام 20`\n\n"
+                    "ℹ️ **اطلاعات:** `.info` • `.پینگ`"
+                )
+                buttons = [[Button.inline("⬅️ بازگشت", data=b"back_main")]]
+                await event.edit(text, buttons=buttons)
+                return
         
-        except errors.MessageNotModifiedError:
-            pass
         except Exception as e:
-            print(f"⚠️ callback: {e}")
+            print(f"⚠️ inline callback: {e}")
             try:
                 await event.answer(f"❌ خطا: {e}", alert=True)
             except:
                 pass
     
-    await bot.run_until_disconnected()
+    try:
+        await bot.run_until_disconnected()
+    except Exception as e:
+        print(f"❌ inline bot قطع شد: {e}")

@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Sessions and Data
+sessions/
+*.session
+db/
+commands.json
+self_data.json
+phones.json
+installs.json
+pending_sessions.json
+metadata.json
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Backups
+backups/
+*.tar.gz
+
+# Virtual environment
+venv/

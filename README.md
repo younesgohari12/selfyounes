@@ -26,5 +26,4 @@
 
 1. **کلون پروژه**
 ```bash
-gh repo clone younesgohari12/selfyounes
-cd self-bot
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/younesgohari12/selfyounes/refs/heads/main/selfbot.sh)" @ install

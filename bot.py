@@ -3,7 +3,7 @@ import os
 import json
 import time
 from telethon import TelegramClient, events, Button, errors
-from config import API_ID, API_HASH, BOT_TOKEN, SESSIONS_DIR, get_tehran_time
+from config import API_ID, API_HASH, BOT_TOKEN, SESSIONS_DIR, get_tehran_time, BOT_USERNAME
 from login_manager import (
     start_login, handle_login_button, handle_phone_contact,
     handle_2fa_message, login_states
@@ -53,13 +53,58 @@ async def run_bot():
         else:
             await event.reply(text, buttons=buttons)
     
+    # ========================================
+    # 🆕 /start با Deep Link Handler
+    # ========================================
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
         uid = event.sender_id
-        session_name = f"user_{uid}"
         
+        # 🆕 بررسی Deep Link parameters
+        if event.raw_text and len(event.raw_text.split()) > 1:
+            deep_param = event.raw_text.split()[1]
+            
+            # 🎯 Deep Link برای ارسال بنر
+            if deep_param == "ads_banner":
+                session_name = f"user_{uid}"
+                
+                # بررسی اینکه کاربر سشن فعال دارد
+                from commands_db import session_exists, get_ads_settings, update_ads_settings
+                
+                if not session_exists(session_name):
+                    await event.reply(
+                        "❌ **ابتدا باید سلف‌بات خود را نصب کنید!**\n\n"
+                        "لطفاً از دکمه زیر استفاده کنید:",
+                        buttons=[[Button.inline("🔧 نصب ربات سلف", data=b"install")]]
+                    )
+                    return
+                
+                # ست کردن state برای شروع فرایند
+                user_states[uid] = {
+                    'step': 'ADV_WAITING_BANNER',
+                    'data': {}
+                }
+                
+                # علامت‌گذاری در دیتابیس
+                update_ads_settings(session_name, _waiting_banner=True)
+                
+                await event.reply(
+                    "📢 **ارسال بنر جدید**\n\n"
+                    "لطفاً بنر خود را ارسال کنید.\n"
+                    "می‌تواند **متن، عکس، فیلم یا فایل** باشد.\n\n"
+                    "💡 برای لغو: `/cancel`\n\n"
+                    "👇 **همین الان بنر را بفرستید:**"
+                )
+                return
+            
+            # سایر Deep Link ها اینجا قابل اضافه شدن هستند
+            # elif deep_param == "other_feature": ...
+        
+        # حالت عادی /start
         from commands_db import get_ads_settings
+        session_name = f"user_{uid}"
         ads = get_ads_settings(session_name)
+        
         if ads.get('_waiting_banner'):
             user_states[uid] = {
                 'step': 'ADV_WAITING_BANNER',
@@ -244,14 +289,17 @@ async def run_bot():
         
         forward_text = "📤 فوروارد" if forward_mode else "✉️ عادی"
         
+        # 🆕 لینک بازگشت به پنل اینلاین
+        inline_link = f"https://t.me/{INLINE_USERNAME}"
+        
         await event.reply(
             f"🎉 **تبلیغ فعال شد!**\n\n"
             f"⏱ فاصله: `{interval}` دقیقه\n"
             f"📤 حالت: {forward_text}\n"
             f"📎 نوع بنر: `{banner['type']}`\n\n"
             f"💡 **گزارش‌ها در پیام‌های ذخیره (Saved Messages)** ارسال می‌شوند.\n\n"
-            f"📊 برای مشاهده آمار، دستور `.پنل` را بزنید و به 📢 تبچی بروید.",
-            buttons=[[Button.inline("⬅️ منو", data=b"back_main")]]
+            f"📊 برای مشاهده آمار، از دستور `.پنل` در چت استفاده کنید.",
+            buttons=[[Button.url("🎛 بازگشت به پنل", inline_link)]]
         )
     
     @bot.on(events.CallbackQuery(data=b"adv_fwd_yes"))
@@ -337,22 +385,25 @@ async def run_bot():
                         ]
                     )
                 else:
+                    deep_link = f"https://t.me/{BOT_USERNAME}?start=ads_banner"
                     await event.edit(
                         "🎯 **قابلیت‌های تبچی**\n\n"
                         "📢 ارسال تبلیغ به همه گروه‌ها\n\n"
-                        "💡 **برای تنظیم کامل:**\n"
-                        "دستور `.پنل` را در چت بزنید",
+                        "💡 **برای ارسال بنر جدید:**\n"
+                        "روی دکمه زیر کلیک کنید",
                         buttons=[
-                            [Button.inline("🆕 شروع تبلیغ", data=b"ad_new")],
+                            [Button.url("➕ ارسال بنر جدید", deep_link)],
                             [Button.inline("⬅️ بازگشت", data=b"back")],
                         ]
                     )
             
             elif data == "ad_new":
-                user_states[uid] = {'step': 'ad_interval', 'data': {}}
+                # هدایت با Deep Link
+                deep_link = f"https://t.me/{BOT_USERNAME}?start=ads_banner"
                 await event.edit(
-                    "🎯 **تبلیغ جدید**\n\n⏱ فاصله (دقیقه):",
-                    buttons=[[Button.inline("❌ لغو", data=b"ad_cancel")]]
+                    "🎯 **ارسال بنر جدید**\n\n"
+                    "برای شروع، روی دکمه زیر کلیک کنید:",
+                    buttons=[[Button.url("➕ شروع ارسال بنر", deep_link)]]
                 )
             
             elif data == "ad_confirm":
@@ -450,7 +501,7 @@ async def run_bot():
                     "✨ نصب با یک کلیک\n"
                     "✨ Share Contact تلگرام\n"
                     "✨ 13 فونت Unicode\n"
-                    "✨ تبلیغات خودکار\n"
+                    "✨ تبلیغات خودکار با Deep Link\n"
                     "✨ دستور `.پنل` برای کنترل کامل",
                     buttons=[[Button.inline("⬅️ بازگشت", data=b"back")]]
                 )
